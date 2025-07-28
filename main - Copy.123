@@ -1,0 +1,187 @@
+// Includes and global variables remain unchanged
+#include <FlickerFreePrint.h>
+#include <ComEVesc.h>
+#include <TFT_eSPI.h>
+#include <SPI.h>
+#include "EEPROMAnything.h"
+
+float trip;
+float startup_total_km;
+float last_total_km_stored;
+float total_km;
+float tacho;
+float rpm;
+float speed;
+float watts;
+float wheel_diameter;
+int maxspeed;
+int brightness = 255;
+char fmt[10];
+
+#define SPEEDFONT &JerseyM54_82pt7b
+#define DATAFONTSMALL2 &JerseyM54_14pt7b
+#define DATAFONTSMALL &JerseyM54_18pt7b
+#define DATAFONTSMALLTEXT &FreeSans9pt7b
+
+#define MOTOR_POLES 30
+#define WHEEL_DIAMETER_MM 246
+#define GEAR_RAITO 1.0
+#define PI 3.141592
+#define SCONST 0.12
+
+#define RXD2 22
+#define TXD2 27
+#define LDR_PIN 34
+#define LCD_BACK_LIGHT_PIN 21
+
+int EEPROM_MAGIC_VALUE = 0;
+#define EEPROM_UPDATE_EACH_KM 0.1
+
+int COLOR_WARNING_SPEED = TFT_RED;
+#define HIGH_SPEED_WARNING 60
+
+int COLOR_WARNING_TEMP_VESC = TFT_WHITE;
+#define VESC_TEMP_WARNING1 50
+#define VESC_TEMP_WARNING2 80
+
+int COLOR_WARNING_TEMP_MOTOR = TFT_WHITE;
+#define MOTOR_TEMP_WARNING1 80
+#define MOTOR_TEMP_WARNING2 120
+
+int BATTERY_WARNING_COLOR = TFT_WHITE;
+#define BATTERY_WARNING_HIGH 67.2
+#define BATTERY_WARNING_LOW 54.4
+#define BATTERY_WARNING_0 48.0
+
+int ERROR_WARNING_COLOR = TFT_WHITE;
+
+#define DO_LOGO_DRAW
+#define DEBUG_MODE
+
+#ifdef DO_LOGO_DRAW
+#include <PNGdec.h>
+#include "startup_image.h"
+#include "background_image.h"
+PNG png;
+int16_t xpos = 0;
+int16_t ypos = 0;
+#define MAX_IMAGE_WDITH 320
+#endif
+
+int Screen_refresh_delay = 50;
+ComEVesc UART;
+HardwareSerial VescSerial(1);
+
+TFT_eSPI tft = TFT_eSPI();
+FlickerFreePrint<TFT_eSPI> Data1(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data2(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data3(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data4(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data5(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data6(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data7(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data8(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data9(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data10(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data11(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data1t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data2t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data3t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data4t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data5t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data6t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data7t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data8t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data9t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data10t(&tft, TFT_WHITE, TFT_BLACK);
+FlickerFreePrint<TFT_eSPI> Data11t(&tft, TFT_WHITE, TFT_BLACK);
+
+void pngDraw(PNGDRAW * pDraw) {
+  uint16_t lineBuffer[MAX_IMAGE_WDITH];
+  png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
+  tft.pushImage(xpos, ypos + pDraw -> y, pDraw -> iWidth, 1, lineBuffer);
+}
+
+void checkvalues() {
+  total_km = startup_total_km + trip;
+  bool traveled_enough_distance = (total_km - last_total_km_stored >= EEPROM_UPDATE_EACH_KM);
+  if (traveled_enough_distance) {
+    last_total_km_stored = total_km;
+    EEPROM_writeAnything(EEPROM_MAGIC_VALUE, total_km);
+  }
+}
+
+void setup(void) {
+  VescSerial.begin(115200, SERIAL_8N1, RXD2, TXD2);
+  while (!VescSerial) delay(10);
+  UART.setSerialPort(&VescSerial);
+  #ifdef DEBUG_MODE
+  Serial.begin(115200);
+  UART.setDebugPort(&Serial);
+  #endif
+  tft.begin();
+  EEPROM.begin(100);
+  tft.setRotation(1);
+  tft.fillScreen(TFT_BLACK);
+  UART.getVescValues();
+  EEPROM_readAnything(EEPROM_MAGIC_VALUE, startup_total_km);
+  startup_total_km *= 0.621371; // convert stored km to miles
+  if (isnan(startup_total_km)) {
+    tft.setCursor(40, 160);
+    tft.setTextFont(4);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.print("SETUP EPROM...");
+    for (int i = 0; i <100; i++) EEPROM_writeAnything(i,0);
+    EEPROM_writeAnything(EEPROM_MAGIC_VALUE,0.0);
+    delay(1500);
+    ESP.restart();
+  }
+  last_total_km_stored = startup_total_km;
+  tacho = (UART.data.tachometerAbs / (MOTOR_POLES * 3));
+  trip = (tacho / 1000) * 0.621371; // km to miles
+  if (startup_total_km != 0) {
+    startup_total_km = startup_total_km - trip;
+  }
+  #ifdef DO_LOGO_DRAW
+  int16_t rc_bg = png.openFLASH((uint8_t * ) startup_image, sizeof(startup_image), pngDraw);
+  if (rc_bg == PNG_SUCCESS) {
+    tft.startWrite();
+    rc_bg = png.decode(NULL, 0);
+    tft.endWrite();
+  }
+  png.close();
+  delay(3000);
+  tft.fillScreen(TFT_BLACK);
+  int16_t rc_mainbg = png.openFLASH((uint8_t * ) background_image, sizeof(background_image), pngDraw);
+  if (rc_mainbg == PNG_SUCCESS) {
+    tft.startWrite();
+    rc_mainbg = png.decode(NULL, 0);
+    tft.endWrite();
+  }
+  png.close();
+  #endif
+}
+
+void loop() {
+  UART.getVescValues();
+  tacho = (UART.data.tachometerAbs / (MOTOR_POLES * 3));
+  rpm = (UART.data.rpm / (MOTOR_POLES / 2));
+  trip = (tacho / 1000) * 0.621371;
+  wheel_diameter = (PI * WHEEL_DIAMETER_MM / 1000);
+  speed = (((rpm * wheel_diameter * GEAR_RAITO) / 1000) * 60) * 0.621371;
+  watts = UART.data.inpVoltage * UART.data.avgInputCurrent;
+  // ... the rest of loop() continues unchanged except:
+  tft.setCursor(135, 235);
+  tft.setFreeFont(DATAFONTSMALLTEXT);
+  Data9t.setTextColor(TFT_WHITE, TFT_BLACK);
+  Data9t.print("MILES");
+
+  tft.setCursor(200, 162);
+  tft.setFreeFont(DATAFONTSMALLTEXT);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.print("MPH");
+
+  delay(Screen_refresh_delay);
+  checkvalues();
+}
