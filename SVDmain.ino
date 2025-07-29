@@ -75,16 +75,21 @@ int16_t ypos = 0;
 
 int Screen_refresh_delay = 250;
 
-// Touch and screen state variables
+// Screen state variables
 enum ScreenState {
   MAIN_SCREEN,
   MENU_SCREEN
 };
 ScreenState currentScreen = MAIN_SCREEN;
-unsigned long lastTouchTime = 0;
-unsigned long doubleTapDelay = 500; // 500ms window for double tap
-bool waitingForSecondTap = false;
+unsigned long lastButtonTime = 0;
+unsigned long doublePressDelay = 500; // 500ms window for double press
+bool waitingForSecondPress = false;
 bool menuBackgroundDrawn = false;
+bool lastButtonState = HIGH;
+bool currentButtonState = HIGH;
+
+// Define button pin - you can change this to any available digital pin
+#define MENU_BUTTON_PIN 0  // Using GPIO 0 (boot button on many ESP32 boards)
 
 ComEVesc UART;
 #define VescSerial Serial1
@@ -112,14 +117,16 @@ void pngDraw(PNGDRAW *pDraw) {
   tft.pushImage(xpos, ypos + pDraw->y, pDraw->iWidth, 1, lineBuffer);
 }
 
-void handleTouch() {
-  uint16_t x, y;
-  if (tft.getTouch(&x, &y)) {
+void handleButton() {
+  currentButtonState = digitalRead(MENU_BUTTON_PIN);
+  
+  // Detect button press (transition from HIGH to LOW)
+  if (lastButtonState == HIGH && currentButtonState == LOW) {
     unsigned long currentTime = millis();
     
-    if (waitingForSecondTap && (currentTime - lastTouchTime) <= doubleTapDelay) {
-      // Double tap detected!
-      waitingForSecondTap = false;
+    if (waitingForSecondPress && (currentTime - lastButtonTime) <= doublePressDelay) {
+      // Double press detected!
+      waitingForSecondPress = false;
       
       if (currentScreen == MAIN_SCREEN) {
         currentScreen = MENU_SCREEN;
@@ -137,15 +144,17 @@ void handleTouch() {
         png.close();
       }
     } else {
-      // First tap
-      waitingForSecondTap = true;
-      lastTouchTime = currentTime;
+      // First press
+      waitingForSecondPress = true;
+      lastButtonTime = currentTime;
     }
   }
   
-  // Reset double tap if too much time has passed
-  if (waitingForSecondTap && (millis() - lastTouchTime) > doubleTapDelay) {
-    waitingForSecondTap = false;
+  lastButtonState = currentButtonState;
+  
+  // Reset double press if too much time has passed
+  if (waitingForSecondPress && (millis() - lastButtonTime) > doublePressDelay) {
+    waitingForSecondPress = false;
   }
 }
 
@@ -189,6 +198,9 @@ void setup(void) {
   tft.fillScreen(TFT_BLACK);
   pinMode(COOLING_PIN, OUTPUT);
   digitalWrite(COOLING_PIN, LOW);
+  
+  // Setup menu button pin
+  pinMode(MENU_BUTTON_PIN, INPUT_PULLUP);
 
   if (!DEMO_MODE) UART.getVescValues();
 
@@ -229,8 +241,8 @@ void setup(void) {
 }
 
 void loop() {
-  // Handle touch input first
-  handleTouch();
+  // Handle button input first
+  handleButton();
   
   if (currentScreen == MENU_SCREEN) {
     drawMenuScreen();
