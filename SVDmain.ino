@@ -66,6 +66,7 @@ int COLOR_WARNING_SPEED = TFT_RED;
 #include <PNGdec.h>
 #include "startup_image.h"
 #include "background_image.h"
+#include "menu_image.h"
 PNG png;
 int16_t xpos = 0;
 int16_t ypos = 0;
@@ -73,6 +74,18 @@ int16_t ypos = 0;
 #endif
 
 int Screen_refresh_delay = 250;
+
+// Touch and screen state variables
+enum ScreenState {
+  MAIN_SCREEN,
+  MENU_SCREEN
+};
+ScreenState currentScreen = MAIN_SCREEN;
+unsigned long lastTouchTime = 0;
+unsigned long doubleTapDelay = 500; // 500ms window for double tap
+bool waitingForSecondTap = false;
+bool menuBackgroundDrawn = false;
+
 ComEVesc UART;
 #define VescSerial Serial1
 
@@ -97,6 +110,60 @@ void pngDraw(PNGDRAW *pDraw) {
   uint16_t lineBuffer[MAX_IMAGE_WDITH];
   png.getLineAsRGB565(pDraw, lineBuffer, PNG_RGB565_BIG_ENDIAN, 0xffffffff);
   tft.pushImage(xpos, ypos + pDraw->y, pDraw->iWidth, 1, lineBuffer);
+}
+
+void handleTouch() {
+  uint16_t x, y;
+  if (tft.getTouch(&x, &y)) {
+    unsigned long currentTime = millis();
+    
+    if (waitingForSecondTap && (currentTime - lastTouchTime) <= doubleTapDelay) {
+      // Double tap detected!
+      waitingForSecondTap = false;
+      
+      if (currentScreen == MAIN_SCREEN) {
+        currentScreen = MENU_SCREEN;
+        menuBackgroundDrawn = false; // Force redraw of menu background
+      } else {
+        currentScreen = MAIN_SCREEN;
+        // Clear screen and redraw main background
+        tft.fillScreen(TFT_BLACK);
+        int16_t rc_mainbg = png.openFLASH((uint8_t *)background_image, sizeof(background_image), pngDraw);
+        if (rc_mainbg == PNG_SUCCESS) {
+          tft.startWrite();
+          png.decode(NULL, 0);
+          tft.endWrite();
+        }
+        png.close();
+      }
+    } else {
+      // First tap
+      waitingForSecondTap = true;
+      lastTouchTime = currentTime;
+    }
+  }
+  
+  // Reset double tap if too much time has passed
+  if (waitingForSecondTap && (millis() - lastTouchTime) > doubleTapDelay) {
+    waitingForSecondTap = false;
+  }
+}
+
+void drawMenuScreen() {
+  if (!menuBackgroundDrawn) {
+    tft.fillScreen(TFT_BLACK);
+    int16_t rc_menubg = png.openFLASH((uint8_t *)menu_image, sizeof(menu_image), pngDraw);
+    if (rc_menubg == PNG_SUCCESS) {
+      tft.startWrite();
+      png.decode(NULL, 0);
+      tft.endWrite();
+    }
+    png.close();
+    menuBackgroundDrawn = true;
+  }
+  
+  // Add any menu-specific content here
+  // For now, it's just a blank screen with the menu background
 }
 
 void checkvalues() {
@@ -162,6 +229,16 @@ void setup(void) {
 }
 
 void loop() {
+  // Handle touch input first
+  handleTouch();
+  
+  if (currentScreen == MENU_SCREEN) {
+    drawMenuScreen();
+    delay(50); // Small delay for menu screen
+    return;
+  }
+  
+  // Main screen code below
   bool vescOk = DEMO_MODE ? true : UART.getVescValues();
 
   if (DEMO_MODE) {
